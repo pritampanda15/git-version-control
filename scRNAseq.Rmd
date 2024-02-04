@@ -89,7 +89,7 @@ head(meta)
 ```{r Create Seurat Object}
 #NOTE: The min.features argument specifies the minimum number of genes that need to be detected per cell. This #argument will filter out poor quality cells that likely just have random barcodes encapsulated without any #cell present. Usually, cells with less than 100 genes detected are not considered for analysis.
 
-pan_seo <- CreateSeuratObject(counts = pancreas_data, project = "TISCH2", min.cells = 3, min.features = 100)
+pan_seo <- CreateSeuratObject(counts = pancreas_data, project = "TISCH2", min.cells = 3, min.features = 400)
 
 str(pan_seo)
 head(pan_seo@meta.data)
