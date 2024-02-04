@@ -1,0 +1,353 @@
+---
+title: "scRNAseq"
+author: "Pritam Kumar Panda"
+date: "2023-10-23"
+output: 
+  html_document: 
+    toc: yes
+    fig_caption: yes
+---
+
+# Activate the r environment. During creation of the project there must be an option to tick box the renv
+
+```{r environment activate}
+renv::activate()
+```
+
+# Take snapshot of the environment and all the package versions.
+
+```{r take snapshot}
+renv::snapshot()
+```
+
+# scRNAseq tutorial from Seurat package
+
+So we will be following the Seurat package tutorial and try to analyze the datasets from TISCH2 database. For example I have taken <http://tisch.comp-genomics.org/gallery/?cancer=PAAD&celltype=&species=> data set from Pancreas.
+
+# Let's begin with installing some packages required for single-cell RNA seq analyses.
+
+```{r installation of packages, eval=FALSE, include=FALSE}
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install(version = "3.17")
+BiocManager::install("BiocParallel")
+
+install.packages("Seurat")
+install.packages("SeuratObject")
+install.packages("ggplot2")
+install.packages("patchwork")
+install.packages("tidyverse")
+install.packages("dplyr")
+
+#Before installing hdf5r, for mac users please install homebrew and then brew install hdf5
+# Also install 
+BiocManager::install("rhdf5")
+install.packages("hdf5r")
+BiocManager::install("DESeq2")
+```
+
+# Load the packages
+
+```{r load the packages}
+library(BiocParallel)
+register(MulticoreParam(workers = 8, progressbar = TRUE))
+library(Seurat)
+library(SeuratObject)
+library(ggplot2)
+library(patchwork)
+library(tidyverse)
+library(hdf5r)
+library(DESeq2)
+```
+
+# Read the data
+
+```{r Read the data}
+#1. check if the file exist
+file.exists("matrix_expression.h5")
+# 2. read raw counts feature matrix h5 
+pancreas_data <- Read10X_h5("matrix_expression.h5")
+```
+
+```{r Check the data}
+str(pancreas_data)
+head(pancreas_data)
+```
+
+# Load the metadata
+
+```{r add metadata}
+metadata <- read.table("metadata.tsv", header = T, sep = "\t")
+head(metadata)
+
+meta <- data.frame(metadata)
+head(meta)  
+```
+
+# Create Seurat object
+
+```{r Create Seurat Object}
+#NOTE: The min.features argument specifies the minimum number of genes that need to be detected per cell. This #argument will filter out poor quality cells that likely just have random barcodes encapsulated without any #cell present. Usually, cells with less than 100 genes detected are not considered for analysis.
+
+pan_seo <- CreateSeuratObject(counts = pancreas_data, project = "TISCH2", min.cells = 3, min.features = 100)
+
+str(pan_seo)
+head(pan_seo@meta.data)
+```
+
+```{r now add metadata to the seurat object}
+
+row.names(meta) <- colnames(x=pan_seo)
+#or
+##row.names(meta) <- meta$Cell
+##pacreas_meta_1 <- AddMetaData(pan_seo, metadata = meta)
+##head(pacreas_meta_1)
+
+head(colnames(x= pan_seo))
+pacreas_meta <- AddMetaData(pan_seo, meta, row.names("Celltype"))
+head(pacreas_meta)
+```
+
+# Data manipulation after loading and adding the metadata successfully to the Seurat Object
+
+# a. Count Matrix
+
+```{r}
+# count matrix
+pacreas_meta@assays$RNA@counts[1:10,1:10]
+
+pacreas_meta[["percent.mt"]] <- PercentageFeatureSet(pacreas_meta, pattern = "^MT-")
+```
+
+# b. QC metrics:Show QC metrics for the first 5 cells
+
+```{r QC metrics}
+
+head(pacreas_meta@meta.data, 5)
+```
+
+```{r filter cells}
+# Filter cells based on unique feature counts and mitochondrial counts
+pacreas_meta <- subset(pacreas_meta, subset = nFeature_RNA > 200 & nFeature_RNA < 2500 & percent.mt < 5)
+
+```
+
+# c. Visualize the data
+
+```{r visualize}
+# ___Visualize QC metrics as a violin plot -------
+VlnPlot(pacreas_meta, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+```
+
+# d. Feature-feature or gene-gene relationship
+
+```{r more visualization}
+plot1 <- FeatureScatter(pacreas_meta, feature1 = "nCount_RNA", feature2 = "percent.mt")
+plot2 <- FeatureScatter(pacreas_meta, feature1 = "nCount_RNA", feature2 = "nFeature_RNA")
+plot1 + plot2
+```
+
+# e. Normalize data
+
+```{r normalize}
+pacreas_meta <- NormalizeData(pacreas_meta, normalization.method = "LogNormalize", scale.factor = 10000)
+
+```
+
+# f. Identify variable features
+
+```{r variable features}
+pacreas_meta <- FindVariableFeatures(pacreas_meta, selection.method = "vst", nfeatures = 2000)
+
+# Identify the 10 most highly variable genes
+top10 <- head(VariableFeatures(pacreas_meta), 10)
+top10
+
+plot1<- VariableFeaturePlot(pacreas_meta)
+plot2<- LabelPoints(plot=plot1, points=top10, repel = TRUE, xnudge = 0 , ynudge = 0)
+plot1+plot2
+```
+
+# g. Scale the data
+
+If scaling error occurs due to vector size \`\`\`Error: vector memory exhausted (limit reached?)\`\`\`\` then create a .Renviron file and paste this "R_MAX_VSIZE=100Gb and save it. Restart R studio and it will run smoothly.
+
+```{r scale the data}
+
+all.genes <- rownames(pacreas_meta) 
+pacreas_meta <- ScaleData(pacreas_meta, features = all.genes) 
+
+#if it takes more time then regress the heterogeneity associated with the samples such as mitochondrial mt.
+#pacreas_meta <- ScaleData(pacreas_meta, vars.to.regress = "percent.mt") 
+```
+
+# h. Linear Dimensionality Reduction
+
+```{r run PCA and examine}
+# Run PCA
+pacreas_meta <- RunPCA(pacreas_meta, features = VariableFeatures(object = pacreas_meta))
+
+# Examine and visualize PCA results
+print(pacreas_meta[["pca"]], dims = 1:5, nfeatures = 5)
+
+# Visualize PCA results
+VizDimLoadings(pacreas_meta, dims = 1:2, reduction = "pca")
+DimPlot(pacreas_meta, reduction = "pca")
+
+# Plot PCA results as a heatmap
+DimHeatmap(pacreas_meta, dims = 1, cells = 500, balanced = TRUE)
+DimHeatmap(pacreas_meta, dims = 1:15, cells = 500, balanced = TRUE)
+DimHeatmap(pacreas_meta, dims = 1:5, cells = 500, balanced = TRUE)
+
+```
+
+#i. Determine dimensionality of the dataset
+
+```{r determine dimensionality}
+# JackStraw Procedure!
+# identify ‘significant’ PCs as those who have a strong enrichment of low p-value features.NOTE: This process can take a long time for big datasets, comment out for expediency. Moreapproximate techniques su ch as those implemented in ElbowPlot() can be used to reduce computation time
+
+pacreas_meta <- JackStraw(pacreas_meta, num.replicate = 100)
+pacreas_meta <- ScoreJackStraw(pacreas_meta, dims = 1:20)
+
+# The JackStrawPlot() function provides a visualization tool for comparing the distribution of p-values for each PC with a uniform distribution (dashed line). 
+# ‘Significant’ PCs will show a strong enrichment of features with low p-values (solid curve above the dashed line).
+
+# Visualize JackStraw results
+JackStrawPlot(pacreas_meta, dims = 1:20)
+
+# An alternative heuristic method generates an ‘Elbow plot’: a ranking of principle components based on the percentage of variance explained by each one (ElbowPlot() function).
+
+ElbowPlot(pacreas_meta)
+# from the plot, it looks like majority of true signal is captured in the first 15 PCs.
+# PCs to consider = 15
+# Generate an Elbow plot to determine the number of significant PCs
+
+```
+
+#j. Cluster cells
+
+```{r cluster cells}
+pacreas_meta <- FindNeighbors(pacreas_meta, dims = 1:15)
+
+```
+
+#k. Find clusters
+
+```{r find clusters}
+# The FindClusters() function contains a resolution parameter that sets the ‘granularity’ of the downstream clustering, with increased values leading to a greater number of clusters. 
+# We find that setting this parameter between 0.4-1.2 typically returns good results for single-cell datasets of around 3K cells. 
+# Optimal resolution often increases for larger datasets.
+
+pacreas_meta <- FindClusters(pacreas_meta, resolution = 0.5)
+
+# Look at cluster IDs of the first 5 cells
+head(Idents(pacreas_meta), 5)
+```
+
+# l. Run non-linear dimensional reduction (UMAP/tSNE)
+
+```{r non-linear dimension UMAP}
+
+pacreas_meta <- RunUMAP(pacreas_meta, dims = 1:15)
+
+# note that you can set `label = TRUE` or use the LabelClusters function to help label
+# individual clusters
+DimPlot(pacreas_meta, reduction = "umap")
+
+#save the file. You can load anytime this object and easily share with collabs.
+saveRDS(pacreas_meta, file = "pancreas_scRNA_object.rds")
+```
+
+# m. Finding differentially expressed features (cluster biomarkers)
+
+```{r differentialy expressed clusters}
+# Seurat can help you find markers that define clusters via differential expression. 
+# ___find markers for every cluster compared to all remaining cells, report only the positive ones. You can also  use DESeq2 package/algorithm to find expressed only up-regulated genes only. You choose counts as DESeq work with raw counts and since its RNA assay. 
+
+pacreas_meta.markers <- FindAllMarkers(pacreas_meta, only.pos = TRUE, min.pct = 0.25, logfc.threshold = 0.25)
+
+head(pacreas_meta.markers)
+
+pacreas_meta.markers %>% 
+  group_by(cluster) %>% 
+  slice_max(n = 2, order_by = avg_log2FC)
+
+head(pacreas_meta.markers)
+
+top <- pacreas_meta.markers %>% 
+  group_by(cluster) %>% 
+  top_n(n = 2, wt = avg_log2FC)
+
+head(top)
+
+# You can also find  markers of individual clusters "cluster 1" . You can individually find markers of all the clusters
+cluster1.markers <- FindMarkers(pacreas_meta, ident.1 = 2, min.pct = 0.25)
+head(cluster1.markers, n = 5)
+
+# Likewise find markers distinguishing cluster 5 from clusters 0 and 3. You can compare it with all other clusters c(0,3,5.....)
+cluster5.markers <- FindMarkers(pacreas_meta, ident.1 = 5, ident.2 = c(0, 3), min.pct = 0.25)
+head(cluster5.markers, n = 5)
+
+```
+
+# n. Visualization
+
+```{r visualize the results}
+# VlnPlot() (shows expression probability distributions across clusters)
+# FeaturePlot() (visualizes feature expression on a tSNE or PCA plot) are our most commonly used visualizations. 
+# RidgePlot(), CellScatter(), and DotPlot() as additional methods to view your dataset.
+
+str(pacreas_meta)
+features <- pacreas_meta@commands$RunPCA.RNA$features
+VlnPlot(pacreas_meta, features = c("AMBP", "SLC4A4"))
+
+# ___VlnPlot() - you can plot raw counts as well ---------
+VlnPlot(pacreas_meta, features = c("AMBP", "SLC4A4"), slot = "counts", log = TRUE)
+
+# ___FeaturePlot()- visualize feature expression in low-dimensional space ---------
+FeaturePlot(pacreas_meta, features = features[1:5])
+
+# Visualize co-expression of two features simultaneously
+FeaturePlot(pacreas_meta, features = features[1:2], blend = TRUE)
+
+# ___interactive plots --------
+# Include additional data to display alongside cell names by passing in a data frame of
+# information Works well when using FetchData
+# works only with one feature
+plot <- FeaturePlot(pacreas_meta, features = c("AMBP"))
+HoverLocator(plot = plot, information = FetchData(pacreas_meta, vars = c("ident", "PC_1", "nFeature_RNA")))
+
+# ___doHeatmap() --------
+top10 <- pacreas_meta.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+DoHeatmap(pacreas_meta, features = top10$gene) + NoLegend()
+
+# ___RidgePlot() - Visualize single cell expression distribution in each cluster -------
+RidgePlot(pacreas_meta, features = features[1:5], ncol=2)
+
+# ___Dot plots - the size of the dot corresponds to the percentage of cells expressing the feature --------
+# in each cluster. The color represents the average expression level
+DotPlot(pacreas_meta, features = features[1:5]) + RotatedAxis()
+
+# ___Single cell heatmap of feature expression -------
+DoHeatmap(subset(pacreas_meta, downsample = 100), features = features[1:5], size = 3)
+
+
+```
+
+# o. assigning cell type identity to clusters
+
+```{r assign cell type identity}
+#without labels
+DimPlot(pacreas_meta, reduction = "umap", label = TRUE, pt.size = 0.5)
+#with labels
+DimPlot(pacreas_meta, reduction = "umap", label = TRUE, group.by = 'Celltype' , pt.size = 0.5)
+```
+
+#p. save final rds
+
+```{r save final rds}
+saveRDS(pacreas_meta, file = "pancreas_scRNA_object_with clusters_celltype.rds")
+sessionInfo()
+```
